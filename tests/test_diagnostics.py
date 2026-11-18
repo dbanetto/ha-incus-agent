@@ -5,7 +5,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -105,6 +105,39 @@ class DiagnosticsTests(unittest.TestCase):
     def test_unregistered_filesystem_is_unknown(self):
         self.write(self.proc / "filesystems", "nodev\tproc\n")
         self.assertEqual(self.states()["9p_registered"], "unknown")
+
+    def test_default_does_not_run_source_check(self):
+        source = Mock()
+        with patch.dict("sys.modules", {"source_check": source}):
+            self.subject.run()
+        source.run_source_check.assert_not_called()
+
+    def test_opt_in_runs_source_check(self):
+        source = Mock()
+        source.run_source_check.return_value = {
+            "status": "present", "detail": "Source inspection only.", "attempts": [],
+        }
+        with patch.dict("sys.modules", {"source_check": source}):
+            report = self.subject.run("source_check")
+        source.run_source_check.assert_called_once_with(self.subject)
+        self.assertEqual(report["mode"], "source_check")
+        self.assertIn("At least one source share", report["conclusion"])
+
+    def test_unknown_host_never_runs_source_check(self):
+        self.write(self.proc / "1/comm", "python3\n")
+        source = Mock()
+        with patch.dict("sys.modules", {"source_check": source}):
+            self.subject.run("source_check")
+        source.run_source_check.assert_not_called()
+
+    def test_options_default_and_opt_in(self):
+        options = self.base / "options.json"
+        self.assertEqual(diagnostics.load_mode(options), "diagnose")
+        options.write_text('{"mode": "source_check"}')
+        self.assertEqual(diagnostics.load_mode(options), "source_check")
+        options.write_text('{"mode": "manage"}')
+        with self.assertRaises(ValueError):
+            diagnostics.load_mode(options)
 
 
 if __name__ == "__main__":

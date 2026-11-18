@@ -1,4 +1,4 @@
-"""Read-only HAOS host inspection; never execute or install a guest agent."""
+"""HAOS host diagnostics and opt-in read-only source inspection; never run an agent."""
 
 from __future__ import annotations
 
@@ -173,17 +173,23 @@ class Diagnostics:
         except OSError:
             self.add("mounted_agent_shares", "unknown", "Cannot read host mount information.")
 
-    def run(self) -> dict:
+    def run(self, mode: str = "diagnose") -> dict:
+        if mode not in {"diagnose", "source_check"}:
+            raise ValueError("Unsupported diagnostic mode")
         if self.host_identity():
             self.services()
             self.processes()
             self.devices()
             self.kernel()
             self.agent_source()
+            if mode == "source_check":
+                from source_check import run_source_check
+
+                self.add("source_check", **run_source_check(self))
         return {
             "schema_version": 1,
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "mode": "diagnose",
+            "mode": mode,
             "kernel": platform.release(),
             "architecture": platform.machine(),
             "checks": self.checks,
@@ -198,15 +204,37 @@ class Diagnostics:
             return "Agent-named process detected. Do not start a second agent; verify connectivity from Incus."
         if any(states.get(f"{agent}_unit") == "present" for agent in AGENTS):
             return "Native launcher found. Inspect service state before considering a replacement."
+        if states.get("source_check") == "present":
+            return "At least one source share was inspected. Review binary and connection-file results; no agent was installed or started."
         return "No managed agent was started. Review individual checks; runtime feasibility is not yet established."
 
 
+def load_mode(path: Path = Path("/data/options.json")) -> str:
+    try:
+        options = json.loads(path.read_text())
+    except FileNotFoundError:
+        return "diagnose"
+    if not isinstance(options, dict):
+        raise ValueError("Invalid diagnostic mode")
+    mode = options.get("mode", "diagnose")
+    if not isinstance(mode, str) or mode not in {"diagnose", "source_check"}:
+        raise ValueError("Invalid diagnostic mode")
+    return mode
+
+
 def main() -> int:
-    report = Diagnostics().run()
-    print("Incus guest agent diagnostics — read-only, no installation or startup")
+    try:
+        mode = load_mode()
+    except (OSError, ValueError, TypeError):
+        print("Cannot read valid add-on options; no source checks or host changes performed.", file=sys.stderr)
+        return 2
+    print(f"Incus guest agent diagnostics — mode={mode}, no installation or agent startup")
+    if mode == "source_check":
+        print("Source check enabled: temporary read-only mounts in an isolated private namespace.")
+    report = Diagnostics().run(mode)
     for check in report["checks"]:
         print(f"[{check['status'].upper()}] {check['name']}: {check['detail']}")
-        for key in ("identity", "processes", "ports", "shares"):
+        for key in ("identity", "processes", "ports", "shares", "attempts"):
             if check.get(key):
                 print(f"  {key}: {json.dumps(check[key], sort_keys=True)}")
     print(f"\nConclusion: {report['conclusion']}")
