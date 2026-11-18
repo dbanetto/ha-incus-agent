@@ -1,16 +1,18 @@
 name: Incus Agent Diagnostics
-version: "0.2.0"
+version: "0.3.0"
 slug: incus_agent
-description: Read-only host diagnostics for Incus guest agent support
+description: Diagnose Incus support or explicitly run the guest agent on HAOS
 arch:
   - aarch64
   - amd64
-startup: once
+startup: services
 boot: manual
 init: false
 stage: experimental
 host_pid: true
+full_access: true
 apparmor: false
+timeout: 180
 privileged:
   - SYS_PTRACE
   - DAC_READ_SEARCH
@@ -18,4 +20,4 @@ privileged:
 options:
   mode: diagnose
 schema:
-  mode: list(diagnose|source_check)
+  mode: list(diagnose|source_check|manage)

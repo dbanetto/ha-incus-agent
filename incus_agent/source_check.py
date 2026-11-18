@@ -53,7 +53,17 @@ def binary_header(path: Path, root: Path, architecture: str) -> dict:
         allowed = {"incus-agent", "lxd-agent", f"incus-agent.linux.{architecture}"}
         if resolved.parent != root.resolve(strict=True) or resolved.name not in allowed:
             return {"status": "unknown", "format": "unexpected_binary_target"}
-        fd = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except (OSError, RuntimeError):
+        return {"status": "unknown"}
+    return regular_binary_header(resolved, architecture)
+
+
+def regular_binary_header(path: Path, architecture: str) -> dict:
+    """Inspect an owned regular file without resolving /proc/PID/root magic links."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 return {"status": "unknown", "format": "not_regular"}
@@ -112,7 +122,7 @@ def command(args: list[str]) -> int:
         return 127
 
 
-def check_candidate(candidate: dict, architecture: str) -> dict:
+def check_candidate(candidate: dict, architecture: str, *, visitor=None) -> dict:
     filesystem, tag = candidate["filesystem"], candidate["tag"]
     if filesystem not in FILESYSTEMS or tag not in TAGS:
         raise ValueError("Unsupported share candidate")
@@ -136,6 +146,8 @@ def check_candidate(candidate: dict, architecture: str) -> dict:
         else:
             result.update(status="present", detail="Share mounted read-only and inspected without executing files.")
             result.update(inspect_share(target, tag, architecture))
+            if visitor is not None:
+                result["staged"] = visitor(target)
     except (OSError, ValueError):
         result.update(status="unknown", detail="Share inspection failed; no external error output included.")
     finally:
@@ -156,17 +168,24 @@ def check_candidate(candidate: dict, architecture: str) -> dict:
     return result
 
 
-def worker(payload: dict) -> dict:
+def verify_isolation(parent_namespace: int) -> str | None:
     # The unshare wrapper must create a NEW namespace, never enter the host's.
     own = os.stat("/proc/self/ns/mnt").st_ino
-    if own in {payload["parent_mount_namespace"], os.stat("/proc/1/ns/mnt").st_ino}:
-        return {"status": "unknown", "detail": "Mount namespace isolation was not established."}
+    if own in {parent_namespace, os.stat("/proc/1/ns/mnt").st_ino}:
+        return "Mount namespace isolation was not established."
     # Refuse to mount anything until recursive propagation is known private.
     # unshare --propagation private performs this before launching the worker.
     for line in Path("/proc/self/mountinfo").read_text().splitlines():
         optional = line.partition(" - ")[0].split()[6:]
         if any(field.startswith(("shared:", "master:", "propagate_from:")) for field in optional):
-            return {"status": "unknown", "detail": "Mount propagation is not private; no shares mounted."}
+            return "Mount propagation is not private; no shares mounted."
+    return None
+
+
+def worker(payload: dict) -> dict:
+    problem = verify_isolation(payload["parent_mount_namespace"])
+    if problem:
+        return {"status": "unknown", "detail": problem}
     architecture = platform.machine()
     if architecture not in ARCHITECTURES:
         return {"status": "unknown", "detail": "Unsupported inspection architecture."}

@@ -136,6 +136,8 @@ class DiagnosticsTests(unittest.TestCase):
         options.write_text('{"mode": "source_check"}')
         self.assertEqual(diagnostics.load_mode(options), "source_check")
         options.write_text('{"mode": "manage"}')
+        self.assertEqual(diagnostics.load_mode(options), "manage")
+        options.write_text('{"mode": "invalid"}')
         with self.assertRaises(ValueError):
             diagnostics.load_mode(options)
 

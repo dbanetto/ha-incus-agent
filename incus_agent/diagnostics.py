@@ -1,4 +1,4 @@
-"""HAOS host diagnostics and opt-in read-only source inspection; never run an agent."""
+"""HAOS host diagnostics with explicit source-check and managed-agent modes."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ import sys
 
 
 AGENTS = {"incus-agent", "lxd-agent"}
-UNIT_DIRS = ("etc/systemd/system", "usr/lib/systemd/system", "lib/systemd/system")
+UNIT_DIRS = ("etc/systemd/system", "usr/lib/systemd/system", "lib/systemd/system",
+             "run/systemd/system", "run/systemd/transient")
 
 
 def failure_status(error: OSError) -> str:
@@ -217,7 +218,7 @@ def load_mode(path: Path = Path("/data/options.json")) -> str:
     if not isinstance(options, dict):
         raise ValueError("Invalid diagnostic mode")
     mode = options.get("mode", "diagnose")
-    if not isinstance(mode, str) or mode not in {"diagnose", "source_check"}:
+    if not isinstance(mode, str) or mode not in {"diagnose", "source_check", "manage"}:
         raise ValueError("Invalid diagnostic mode")
     return mode
 
@@ -228,10 +229,13 @@ def main() -> int:
     except (OSError, ValueError, TypeError):
         print("Cannot read valid add-on options; no source checks or host changes performed.", file=sys.stderr)
         return 2
-    print(f"Incus guest agent diagnostics — mode={mode}, no installation or agent startup")
+    print(f"Incus guest agent diagnostics — mode={mode}")
+    if mode != "manage":
+        print("No agent installation or startup in this mode.")
     if mode == "source_check":
         print("Source check enabled: temporary read-only mounts in an isolated private namespace.")
-    report = Diagnostics().run(mode)
+    report = Diagnostics().run("diagnose" if mode == "manage" else mode)
+    report["mode"] = mode
     for check in report["checks"]:
         print(f"[{check['status'].upper()}] {check['name']}: {check['detail']}")
         for key in ("identity", "processes", "ports", "shares", "attempts"):
@@ -239,11 +243,15 @@ def main() -> int:
                 print(f"  {key}: {json.dumps(check[key], sort_keys=True)}")
     print(f"\nConclusion: {report['conclusion']}")
     try:
-        # /data belongs to this add-on. No host paths are written.
+        # /data belongs to this add-on; the report contains no credentials.
         Path("/data/report.json").write_text(json.dumps(report, indent=2) + "\n")
         print("Report saved to the add-on's private /data/report.json.")
     except OSError:
         print("Could not save private report; diagnostic results remain in these logs.", file=sys.stderr)
+    if mode == "manage":
+        from manager import manage
+
+        return manage()
     return 0
 
 

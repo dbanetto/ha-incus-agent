@@ -43,6 +43,12 @@ class SourceCheckTests(unittest.TestCase):
         self.assertFalse(source_check.inspect_share(self.root, "config", "aarch64")
                          ["binaries"]["incus-agent"]["architecture_matches"])
 
+    def test_owned_header_inspection_does_not_resolve_magic_links(self):
+        (self.root / "incus-agent").write_bytes(elf())
+        with patch.object(Path, "resolve", side_effect=AssertionError("must preserve kernel magic links")):
+            result = source_check.regular_binary_header(self.root / "incus-agent", "aarch64")
+        self.assertTrue(result["architecture_matches"])
+
     def test_loader_script_and_split_agent_share(self):
         (self.root / "incus-agent").write_text("#!/bin/sh\nDO_NOT_EXECUTE\n")
         self.assertEqual(source_check.inspect_share(self.root, "config", "aarch64")
